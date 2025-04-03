@@ -28,16 +28,19 @@ def create_tables(conn):
     CREATE TABLE IF NOT EXISTS economic_impact (
         year INTEGER PRIMARY KEY,
         avg_tariff_rate REAL,
-        delta_tariff REAL,
         imports_value REAL,
         exports_value REAL,
-        delta_imports REAL,
-        delta_exports REAL,
         GDP REAL,
-        delta_GDP REAL,
         CPI REAL,
         Unemployment_Rate REAL,
         Industrial_Production REAL
+        delta_tariff REAL,
+        delta_imports REAL,
+        delta_exports REAL,
+        delta_GDP REAL,
+        cpi_delta REAL,
+        unemployment_delta REAL,
+        industrial_delta REAL,
     );
     """)
 
