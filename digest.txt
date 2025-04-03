@@ -1,0 +1,587 @@
+Directory structure:
+└── TariffImpactAnalysis/
+    ├── README.md
+    ├── main.py
+    ├── requirements.txt
+    ├── data/
+    │   ├── Tariffs/
+    │   │   ├── applied.csv
+    │   │   ├── exports.csv
+    │   │   └── imports.csv
+    │   └── filings/
+    ├── database/
+    │   └── data.db
+    ├── notebooks/
+    ├── output/
+    ├── scripts/
+    │   └── run_main.sh
+    └── src/
+        ├── __init__.py
+        ├── config.py
+        ├── db_manager.py
+        ├── db_utils.py
+        ├── fetch_macro_data.py
+        ├── fetch_tariffs.py
+        ├── schema.py
+        ├── visualize.py
+        └── __pycache__/
+
+================================================
+File: README.md
+================================================
+# Tariff Impact Analysis Project
+This project combines trade flow analysis, inflation impact analysis, and sentiment analysis of tariff impacts using Python and SQLite.
+## Project Structure
+- **data/**: Raw data and filings.
+- **database/**: SQLite database.
+- **notebooks/**: Jupyter Notebooks for exploratory data analysis.
+- **src/**: Source code modules.
+  - **config.py**: Configuration settings.
+  - **db_utils.py**: Database utility functions.
+  - **db_manager.py**: Database initialization and management.
+  - **schema.py**: Database schema definitions.
+  - **trade_flow.py**: Trade flow data fetching and processing.
+  - **inflation_model.py**: CPI data analysis and regression.
+  - **sentiment_nlp.py**: Sentiment analysis of tariff-related text.
+- **scripts/**: Utility scripts (e.g., shell scripts to run the project).
+- **main.py**: Main entry point that runs the analysis.
+## Usage
+1. **Initialize the database:**  
+   Run `python3 -m src.db_manager` to create the SQLite database and tables.
+2. **Run the analysis:**  
+   Execute `python3 main.py` or run the provided shell script: `./scripts/run_main.sh`
+3. **Explore further:**  
+   Use the notebooks in the **notebooks/** folder for exploratory data analysis.
+
+
+
+================================================
+File: main.py
+================================================
+from src.db_manager import initialize_database
+from src.visualize import run_tariff_analysis
+from src.fetch_macro_data import fetch_and_store_macro_data
+
+def main():
+    # Initialize the database and create tables
+    print("Initializing database...")
+    initialize_database()
+
+    # Fetch and store macroeconomic data
+    print("Fetching macroeconomic data...")
+    fetch_and_store_macro_data()
+    print("Macro data fetched and stored.")
+    
+    # Tariff Analysis
+    print("Fetching tariff data...")
+    print("Running tariff regression on CPI data...")
+    run_tariff_analysis()
+    print("Tariff regression analysis completed.")
+    
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+File: requirements.txt
+================================================
+pandas
+requests
+matplotlib
+statsmodels
+fredapi
+transformers
+torch
+
+
+================================================
+File: scripts/run_main.sh
+================================================
+#!/bin/bash
+echo "Running main.py..."
+python3 main.py
+
+
+
+================================================
+File: src/__init__.py
+================================================
+
+
+
+================================================
+File: src/config.py
+================================================
+import os
+# Base directory for this module
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(os.path.dirname(BASE_DIR), "database", "data.db")
+
+# SEC for EDGAR Filings, Statements, and Financials
+SEC_Base_URL = "https://api.sec-api.io"
+SEC_API_KEY = "167b0f020738341948c35033b570748e599f5e632b62593d64e1c926967d28ac"
+
+#Federal Reserve Economic Data (FRED) API
+FRED_API_KEY = "e795295f1d454318e2ac436f480317d2"
+FRED_Base_URL = "https://api.stlouisfed.org/fred"
+
+# Tariff Rates API configuration
+TARIFF_API_KEY = "22d7e554a0msh4b5224dbea1a4dbp1baac7jsn2197588dd568"
+TARIFF_API_HOST = "dataservices-tariff-rates-v1.p.rapidapi.com"
+TARIFF_BASE_URL = "https://dataservices-tariff-rates-v1.p.rapidapi.com/api.trade.gov/v2/tariff_rates/search"
+
+
+================================================
+File: src/db_manager.py
+================================================
+import sqlite3
+from src.config import DB_PATH
+from src.schema import create_tables
+
+def create_connection(db_file):
+    """Create a database connection to the SQLite database specified by db_file."""
+    conn = None
+    try:
+        conn = sqlite3.connect(db_file)
+        return conn
+    except sqlite3.Error as e:
+        print(e)
+    return conn
+
+def initialize_database():
+    """Initialize the database and create required tables."""
+    conn = sqlite3.connect(DB_PATH)
+    create_tables(conn)
+    conn.close()
+
+if __name__ == "__main__":
+    initialize_database()
+    print("Database initialized and tables created.")
+
+
+
+
+
+================================================
+File: src/db_utils.py
+================================================
+import sqlite3
+import pandas as pd
+from src.config import DB_PATH
+
+def get_connection():
+    """Return a connection to the SQLite database."""
+    return sqlite3.connect(DB_PATH)
+
+def store_dataframe(df, table_name, if_exists='replace'):
+    """Store a pandas DataFrame in the specified table."""
+    with get_connection() as conn:
+        df.to_sql(table_name, conn, index=False, if_exists=if_exists)
+
+def fetch_query(query):
+    """Fetch data from the database as a pandas DataFrame."""
+    with get_connection() as conn:
+        return pd.read_sql(query, conn)
+
+
+
+================================================
+File: src/fetch_macro_data.py
+================================================
+import pandas as pd
+from fredapi import Fred
+from src.config import FRED_API_KEY
+from src.db_utils import store_dataframe
+
+def fetch_and_store_macro_data_as_economic_impact():
+    """
+    Fetches key macroeconomic indicators from FRED, resamples the data to only include
+    the first available observation for each year (typically January 1), filters the data
+    for the period 1996-2024, adds a 'year' column, and stores the result in a new 
+    database table called "economic_impact".
+    
+    Macroeconomic series fetched:
+      - CPI (Consumer Price Index for All Urban Consumers: All Items, 'CPIAUCSL')
+      - Unemployment Rate ('UNRATE')
+      - Industrial Production Index ('INDPRO')
+      - GDP (Gross Domestic Product, 'GDP')
+    """
+    # Initialize the Fred client using your API key from config.py
+    fred = Fred(api_key=FRED_API_KEY)
+    
+    # Fetch macroeconomic indicators from FRED
+    cpi = fred.get_series('CPIAUCSL')
+    unrate = fred.get_series('UNRATE')
+    indpro = fred.get_series('INDPRO')
+    gdp = fred.get_series('GDP')
+    
+    # Convert each series to a DataFrame and reset the index so that Date becomes a column.
+    cpi_df = cpi.to_frame(name="CPI").reset_index().rename(columns={"index": "Date"})
+    unrate_df = unrate.to_frame(name="Unemployment_Rate").reset_index().rename(columns={"index": "Date"})
+    indpro_df = indpro.to_frame(name="Industrial_Production").reset_index().rename(columns={"index": "Date"})
+    gdp_df = gdp.to_frame(name="GDP").reset_index().rename(columns={"index": "Date"})
+    
+    # Merge all DataFrames on 'Date' using an outer join to preserve all data points.
+    macro_df = pd.merge(cpi_df, unrate_df, on="Date", how="outer")
+    macro_df = pd.merge(macro_df, indpro_df, on="Date", how="outer")
+    macro_df = pd.merge(macro_df, gdp_df, on="Date", how="outer")
+    
+    # Convert 'Date' to datetime and sort
+    macro_df['Date'] = pd.to_datetime(macro_df['Date'])
+    macro_df.sort_values("Date", inplace=True)
+    
+    # Resample to Annual Start ('AS') - take the first available observation for each year.
+    macro_df = macro_df.set_index("Date").resample("AS").first().reset_index()
+    
+    # Filter data for the period 1996-2024
+    start_date = pd.to_datetime("1996-01-01")
+    end_date = pd.to_datetime("2024-12-31")
+    macro_df = macro_df[(macro_df['Date'] >= start_date) & (macro_df['Date'] <= end_date)]
+    
+    # Add a 'year' column extracted from the Date.
+    macro_df['year'] = macro_df['Date'].dt.year
+    
+    # Store the resulting DataFrame in the database under the table 'economic_impact'
+    store_dataframe(macro_df, "economic_impact")
+    
+    print("Macro data stored in table 'economic_impact' (Annual data from 1996 to 2024):")
+    print(macro_df.head())
+
+if __name__ == "__main__":
+    fetch_and_store_macro_data_as_economic_impact()
+
+
+
+================================================
+File: src/fetch_tariffs.py
+================================================
+import os
+import pandas as pd
+from src.db_utils import store_dataframe
+
+# Define the folder containing the CSV files
+base_folder = "data/tariffs/"
+
+# Define file paths for the three CSVs
+imports_csv = os.path.join(base_folder, "imports.csv")
+exports_csv = os.path.join(base_folder, "exports.csv")
+applied_csv = os.path.join(base_folder, "applied.csv")
+
+# Define the unified columns for the final table
+unified_columns = [
+    "data_type",
+    "reporter_name",
+    "reporter_code",
+    "year",
+    "classification",
+    "classification_version",
+    "product_code",
+    "mtn_categories",
+    "partner_code",
+    "partner_name",
+    "value",
+    "duty_scheme_code",
+    "duty_scheme_name",
+    "simple_average",
+    "trade_weighted",
+    "duty_free_share"
+]
+
+# --- Process Imports CSV ---
+imports_df = pd.read_csv(imports_csv)
+imports_df["data_type"] = "imports"
+# Imports CSV already has: reporter_name, reporter_code, year, classification, classification_version, product_code, mtn_categories, partner_code, partner_name, value
+# Add tariff-specific columns as NULL (None)
+for col in ["duty_scheme_code", "duty_scheme_name", "simple_average", "trade_weighted", "duty_free_share"]:
+    imports_df[col] = None
+imports_df = imports_df[unified_columns]
+
+# --- Process Exports CSV ---
+exports_df = pd.read_csv(exports_csv)
+exports_df["data_type"] = "exports"
+# Exports CSV structure is the same as Imports
+for col in ["duty_scheme_code", "duty_scheme_name", "simple_average", "trade_weighted", "duty_free_share"]:
+    exports_df[col] = None
+exports_df = exports_df[unified_columns]
+
+# --- Process Applied CSV ---
+applied_df = pd.read_csv(applied_csv)
+applied_df["data_type"] = "applied"
+# Applied CSV has these columns:
+# ['reporter_name', 'reporter_code', 'year', 'classification', 'classification_version',
+#  'duty_scheme_code', 'duty_scheme_name', 'product_code', 'mtn_categories', 
+#  'simple_average', 'trade_weighted', 'duty_free_share']
+# It does not have partner-related fields or value, so we add them as NULL:
+for col in ["partner_code", "partner_name", "value"]:
+    applied_df[col] = None
+applied_df = applied_df[unified_columns]
+
+# --- Combine All DataFrames ---
+unified_df = pd.concat([imports_df, exports_df, applied_df], ignore_index=True)
+print("Unified DataFrame preview:")
+print(unified_df.head())
+
+# --- Store into the 'tariffs' table in SQLite ---
+store_dataframe(unified_df, "tariffs")
+
+
+================================================
+File: src/schema.py
+================================================
+def create_tables(conn):
+    cursor = conn.cursor()
+    
+    # Unified tariffs table (already in use)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tariffs (
+        data_type TEXT,
+        reporter_name TEXT,
+        reporter_code TEXT,
+        year INTEGER,
+        classification TEXT,
+        classification_version TEXT,
+        product_code TEXT,
+        mtn_categories TEXT,
+        partner_code TEXT,
+        partner_name TEXT,
+        value REAL,
+        duty_scheme_code TEXT,
+        duty_scheme_name TEXT,
+        simple_average REAL,
+        trade_weighted REAL,
+        duty_free_share REAL
+    );
+    """)
+    
+    # Macro data table (annual data)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS macro (
+        Date TEXT,
+        year INTEGER,
+        CPI REAL,
+        Unemployment_Rate REAL,
+        Industrial_Production REAL,
+        GDP REAL
+    );
+    """)
+    
+    # Economic Impact table: merged tariff changes with macro data
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS economic_impact (
+        year INTEGER PRIMARY KEY,
+        avg_tariff_rate REAL,
+        delta_tariff REAL,
+        imports_value REAL,
+        exports_value REAL,
+        delta_imports REAL,
+        delta_exports REAL,
+        GDP REAL,
+        delta_GDP REAL,
+        CPI REAL,
+        Unemployment_Rate REAL,
+        Industrial_Production REAL
+    );
+    """)
+    
+    conn.commit()
+
+
+
+================================================
+File: src/visualize.py
+================================================
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import statsmodels.api as sm
+import seaborn as sns
+from src.db_utils import fetch_query, store_dataframe
+
+def run_tariff_macro_analysis():
+    """
+    This function:
+      1. Loads and processes tariff data from the 'tariffs' table,
+         aggregating by year to obtain average tariff rates (from applied data)
+         and total imports and exports.
+      2. Loads macroeconomic data (including GDP) from the 'macro_data' table.
+      3. Merges the tariff data with macro data on year.
+      4. Performs regression analysis of trade values on tariff rates.
+      5. Computes year-to-year differences (deltas) for tariffs, imports, exports, and GDP,
+         and stores these deltas in a new table 'tariff_changes'.
+      6. Computes and prints a correlation matrix for tariff rates, trade values, and macro indicators.
+      7. Creates and saves visualizations:
+           - A scatter plot with regression lines (trade vs. tariff rate)
+           - A two-subplot figure: 
+               Top: Year-to-year changes in tariff rates (bps)
+               Bottom: Grouped bar chart of year-to-year changes in imports (B USD), exports (B USD), and GDP (B USD)
+           - A heatmap of the correlation matrix.
+    """
+    # -----------------------------
+    # Part 1: Load and Process Tariff Data
+    # -----------------------------
+    tariffs_df = fetch_query("SELECT * FROM tariffs")
+    tariffs_df['year'] = tariffs_df['year'].astype(int)
+    
+    # Separate by data_type
+    applied_df = tariffs_df[tariffs_df['data_type'] == 'applied']
+    imports_df = tariffs_df[tariffs_df['data_type'] == 'imports']
+    exports_df = tariffs_df[tariffs_df['data_type'] == 'exports']
+    
+    # Aggregate tariff data by year (using trade_weighted as tariff measure)
+    applied_agg = applied_df.groupby('year')['trade_weighted'].mean().reset_index()
+    applied_agg.rename(columns={'trade_weighted': 'avg_tariff_rate'}, inplace=True)
+    
+    # Aggregate imports and exports (summing trade values)
+    imports_agg = imports_df.groupby('year')['value'].sum().reset_index()
+    imports_agg.rename(columns={'value': 'imports_value'}, inplace=True)
+    
+    exports_agg = exports_df.groupby('year')['value'].sum().reset_index()
+    exports_agg.rename(columns={'value': 'exports_value'}, inplace=True)
+    
+    # Merge aggregated tariff data
+    analysis_df = pd.merge(applied_agg, imports_agg, on='year', how='inner')
+    analysis_df = pd.merge(analysis_df, exports_agg, on='year', how='inner')
+    analysis_df.sort_values('year', inplace=True)
+    
+    print("Merged Tariff Data:")
+    print(analysis_df)
+    
+    # -----------------------------
+    # Part 2: Regression Analysis on Tariff vs. Trade
+    # -----------------------------
+    X = sm.add_constant(analysis_df['avg_tariff_rate'])
+    model_imports = sm.OLS(analysis_df['imports_value'], X).fit()
+    model_exports = sm.OLS(analysis_df['exports_value'], X).fit()
+    print("Regression Summary for Imports:")
+    print(model_imports.summary())
+    print("Regression Summary for Exports:")
+    print(model_exports.summary())
+    
+    # -----------------------------
+    # Part 3: Compute Year-to-Year Differences (Deltas) and Save to DB
+    # -----------------------------
+    # Compute deltas for tariff rate (in basis points), imports and exports (in billions USD)
+    analysis_df['delta_tariff'] = analysis_df['avg_tariff_rate'].diff() * 100  
+    analysis_df['delta_imports'] = analysis_df['imports_value'].diff() / 1e9  
+    analysis_df['delta_exports'] = analysis_df['exports_value'].diff() / 1e9  
+    
+    # -----------------------------
+    # Part 4: Load Macro Data and Merge with Tariff Data
+    # -----------------------------
+    # Macro data (including GDP) is stored in "macro_data"
+    macro_df = fetch_query("SELECT * FROM macro_data")
+    # Extract year from the Date column
+    macro_df['year'] = pd.to_datetime(macro_df['Date']).dt.year
+    # Remove duplicate years (keep first)
+    macro_df = macro_df.drop_duplicates(subset='year')
+    print("Macro Data:")
+    print(macro_df.head())
+    
+    # Merge tariff data with macro data on year
+    merged_df = pd.merge(analysis_df, macro_df, on='year', how='inner')
+    print("Merged Tariff & Macro Data:")
+    print(merged_df.head())
+    
+    # Compute delta for GDP (assume GDP is in billions USD already)
+    merged_df['delta_GDP'] = merged_df['GDP'].diff()
+    
+    # Drop rows with NaN in any delta columns
+    merged_df.dropna(subset=['delta_tariff', 'delta_imports', 'delta_exports', 'delta_GDP'], inplace=True)
+    
+    # Create a new DataFrame with computed deltas and store in "tariff_changes"
+    delta_df = merged_df[['year', 'delta_tariff', 'delta_imports', 'delta_exports', 'delta_GDP']].copy()
+    store_dataframe(delta_df, "tariff_changes")
+    print("Year-to-Year changes saved to 'tariff_changes':")
+    print(delta_df)
+    
+    # -----------------------------
+    # Part 5: Correlation Analysis
+    # -----------------------------
+    corr_vars = ['avg_tariff_rate', 'imports_value', 'exports_value', 
+                 'CPI', 'Unemployment_Rate', 'Industrial_Production', 'GDP']
+    corr_df = merged_df[corr_vars].corr()
+    print("Correlation Matrix:")
+    print(corr_df)
+    
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(corr_df, annot=True, cmap="coolwarm", fmt=".2f")
+    plt.title("Correlation Matrix: Tariff & Macro Data")
+    output_folder = "output"
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    corr_plot_path = os.path.join(output_folder, "correlation_matrix.png")
+    plt.tight_layout()
+    plt.savefig(corr_plot_path)
+    plt.close()
+    print(f"Correlation matrix plot saved to {corr_plot_path}")
+    
+    # -----------------------------
+    # Part 6: Visualizations (Tariff & Trade)
+    # -----------------------------
+    # Plot 1: Scatter Plot with Regression Lines
+    plt.figure(figsize=(8, 5))
+    plt.scatter(analysis_df['avg_tariff_rate'], analysis_df['imports_value'], 
+                label="Imports Data Points", color="blue")
+    plt.scatter(analysis_df['avg_tariff_rate'], analysis_df['exports_value'], 
+                label="Exports Data Points", color="green")
+    
+    sorted_idx = analysis_df['avg_tariff_rate'].argsort()
+    sorted_x = analysis_df['avg_tariff_rate'].iloc[sorted_idx]
+    X_sorted = sm.add_constant(sorted_x)
+    imports_pred = model_imports.predict(X_sorted)
+    exports_pred = model_exports.predict(X_sorted)
+    
+    plt.plot(sorted_x, imports_pred, color='blue', label="Imports Regression Line")
+    plt.plot(sorted_x, exports_pred, color='green', label="Exports Regression Line")
+    
+    plt.xlabel("Average Tariff Rate (Trade-Weighted)")
+    plt.ylabel("Trade Value")
+    plt.title("Trade Value vs. Tariff Rate")
+    plt.legend()
+    plt.tight_layout()
+    scatter_plot_path = os.path.join(output_folder, "scatter_regression.png")
+    plt.savefig(scatter_plot_path)
+    plt.close()
+    
+    # Plot 2: Two Subplots - Tariff Changes (top) and Trade & GDP Changes (bottom)
+    years_str = merged_df['year'].astype(str).values
+    x = np.arange(len(years_str))
+    # Adjust bar width for three groups in the lower subplot
+    width = 0.25
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(10, 8))
+    fig.suptitle("Year-to-Year Tariff, Trade, & GDP Changes", y=0.95, fontsize=14)
+    
+    # Top Subplot: Tariff Î” (Bar Chart)
+    ax1.bar(x, merged_df['delta_tariff'], width, color='purple', label='Tariff Î” (bps)')
+    ax1.axhline(0, color='black', linewidth=0.8)
+    ax1.set_ylabel("Tariff Change (bps)")
+    ax1.set_title("Year-to-Year Tariff Changes", fontsize=12)
+    ax1.legend(loc='upper left')
+    
+    # Bottom Subplot: Imports, Exports, & GDP Î” (Grouped Bar Chart)
+    rects1 = ax2.bar(x - width, merged_df['delta_imports'], width, color='blue', label='Imports Î” (B USD)')
+    rects2 = ax2.bar(x, merged_df['delta_exports'], width, color='green', label='Exports Î” (B USD)')
+    rects3 = ax2.bar(x + width, merged_df['delta_GDP'], width, color='orange', label='GDP Î” (B USD)')
+    
+    ax2.axhline(0, color='black', linewidth=0.8)
+    ax2.set_ylabel("Change (Billions USD)")
+    ax2.set_title("Year-to-Year Changes in Trade & GDP", fontsize=12)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(years_str, rotation=45)
+    ax2.legend(loc='upper left')
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    delta_plot_path = os.path.join(output_folder, "year_to_year_subplots.png")
+    plt.savefig(delta_plot_path)
+    plt.close()
+    
+    print(f"Plots saved in folder: {output_folder}")
+
+if __name__ == "__main__":
+    run_tariff_macro_analysis()
+
+
+

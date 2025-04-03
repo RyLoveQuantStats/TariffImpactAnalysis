@@ -1,0 +1,7 @@
+pandas
+requests
+matplotlib
+statsmodels
+fredapi
+transformers
+torch
