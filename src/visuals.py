@@ -11,8 +11,8 @@ def run_visualizations():
     Fetches merged economic impact data from the database and creates visualizations:
       1. A correlation heatmap for key variables.
       2. A scatter plot with regression lines (imports/exports vs. tariff rate).
-      3. Two subplots: top for tariff changes, bottom for trade & GDP changes.
-      4. A new plot: All delta metrics together with a subplot for average tariff rates.
+      3. Two subplots: one for tariff changes and one for trade & GDP changes.
+      4. A new plot showing how the change in tariff rates (delta_tariff) impacts each dataset separately.
     """
     # --- Load Merged Data ---
     merged_df = fetch_query("SELECT * FROM economic_impact")
@@ -91,35 +91,51 @@ def run_visualizations():
     plt.close()
     print(f"Year-to-year subplots saved to {two_subplot_path}")
     
-    # --- Plot 4: New Plot for All Deltas with Tariff Rates ---
-    plt.figure(figsize=(12, 10))
-    # Subplot 1: Average Tariff Rate over Time
-    plt.subplot(2, 1, 1)
-    plt.plot(merged_df['year'], merged_df['avg_tariff_rate'], marker='o', linestyle='-', label='Avg Tariff Rate')
-    plt.xlabel("Year")
-    plt.ylabel("Avg Tariff Rate")
-    plt.title("Average Tariff Rate Over Time")
-    plt.legend()
+    # --- New Plot 4: Impact of Delta Tariff on Each Delta Metric ---
+    # Define the delta metrics and their labels.
+    metrics = [
+        ('delta_imports', 'Imports Δ (B USD)'),
+        ('delta_exports', 'Exports Δ (B USD)'),
+        ('delta_GDP', 'GDP Δ (B USD)'),
+        ('cpi_delta', 'CPI Δ'),
+        ('unemployment_delta', 'Unemployment Δ'),
+        ('industrial_delta', 'Industrial Δ')
+    ]
     
-    # Subplot 2: All Delta Metrics over Time
-    plt.subplot(2, 1, 2)
-    plt.plot(merged_df['year'], merged_df['delta_tariff'], marker='o', linestyle='-', label='Tariff Δ')
-    plt.plot(merged_df['year'], merged_df['delta_imports'], marker='o', linestyle='-', label='Imports Δ')
-    plt.plot(merged_df['year'], merged_df['delta_exports'], marker='o', linestyle='-', label='Exports Δ')
-    plt.plot(merged_df['year'], merged_df['delta_GDP'], marker='o', linestyle='-', label='GDP Δ')
-    plt.plot(merged_df['year'], merged_df['cpi_delta'], marker='o', linestyle='-', label='CPI Δ')
-    plt.plot(merged_df['year'], merged_df['unemployment_delta'], marker='o', linestyle='-', label='Unemployment Δ')
-    plt.plot(merged_df['year'], merged_df['industrial_delta'], marker='o', linestyle='-', label='Industrial Δ')
-    plt.xlabel("Year")
-    plt.ylabel("Delta Value")
-    plt.title("Year-to-Year Changes (Deltas)")
-    plt.legend(loc='upper right')
+    n_metrics = len(metrics)
+    n_cols = 2
+    n_rows = int(np.ceil(n_metrics / n_cols))
     
-    all_deltas_path = os.path.join(output_folder, "all_deltas.png")
-    plt.tight_layout()
-    plt.savefig(all_deltas_path)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, n_rows * 4))
+    axes = axes.flatten()
+    
+    for i, (metric, label) in enumerate(metrics):
+        ax = axes[i]
+        # Scatter plot: delta_tariff on x-axis vs. the current metric on y-axis
+        ax.scatter(merged_df['delta_tariff'], merged_df[metric], color='teal', alpha=0.7)
+        # Fit a linear regression for clarity
+        X_d = sm.add_constant(merged_df['delta_tariff'])
+        model = sm.OLS(merged_df[metric], X_d).fit()
+        sorted_idx = merged_df['delta_tariff'].argsort()
+        sorted_x = merged_df['delta_tariff'].iloc[sorted_idx]
+        X_sorted_d = sm.add_constant(sorted_x)
+        y_pred = model.predict(X_sorted_d)
+        ax.plot(sorted_x, y_pred, color='red', linewidth=2, label='Regression')
+        ax.set_xlabel("Tariff Δ (bps)")
+        ax.set_ylabel(label)
+        ax.set_title(f"Impact of Tariff Δ on {label}")
+        ax.legend()
+    
+    # Hide any unused subplots
+    for j in range(i + 1, len(axes)):
+        axes[j].axis('off')
+    
+    plt.suptitle("Impact of Year-to-Year Tariff Change on Each Metric", fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    new_deltas_path = os.path.join(output_folder, "delta_relationships.png")
+    plt.savefig(new_deltas_path)
     plt.close()
-    print(f"All deltas plot saved to {all_deltas_path}")
+    print(f"Delta relationships plot saved to {new_deltas_path}")
 
 def main():
     run_visualizations()
